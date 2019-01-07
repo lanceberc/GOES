@@ -1,11 +1,13 @@
 #!/usr/bin/python
 import os
+import sys
 import re
 import time
 import subprocess
 import logging
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFile
+from PIL import Image, ImageDraw, ImageFont
+from osgeo import gdal
 
 """
 The general flow is to get geocolored GOES tiles from CIRA/RAMMB, paste them into a full-disk image,
@@ -46,9 +48,9 @@ WGS84 =  EPSG:4326
 Mercator =  EPSG:3395
 Web Mercator =  EPSG:3857
 
-The OPC chart is a Mercator projection. The GOES image is warped to Mercator (instead of both warped
-to some other projection) to keep the text and annotations readable. Besides, many are familiar with
-Mercator maps of the North Atlantic and Pacific.
+The OPC chart is a Mercator projection. The GOES image warped from geos (Geosynchronos)
+ projection to Mercator (instead of both warped to some other projection) to keep the text and
+annotations readable. Besides, many are familiar with Mercator maps of the North Atlantic and Pacific.
 
 The EPSG definition of Mercator (EPSG:3395) doesn't work with GDAL when crossing the anti-meridian.
 Many workflows apparently process images and charts as East and West hemisphere halves and join them
@@ -58,6 +60,10 @@ CENTER_LONG tells GDAL not to "go the other way" around the globe, centering on 
 of Greenwich.
 
 +proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over
+
+After warping the image to Mercator convert from GDAL's format to a Pillow image via numpy. This is
+done by transposing the axes so a linear readout of the GDAL buffer comes out in RGBA order. Using
+numpy is much, much faster than a naive copy (like more than 30s per image faster).
 
 Program flow:
 
@@ -86,7 +92,18 @@ regions["pacific"] = {"sfc": "S:/NOAA/OPC/pacific",
                       "image": "S:/NASA/GOES-17_03_geocolor/composite",
                       "dest": "S:/NASA/GOES-17_03_geocolor/overlay",
                       "starttime": "201812240300",
+                      "goes": "17",
+                      "WKT": 'PROJCS["unnamed",GEOGCS["unnamed ellipse",DATUM["unknown",SPHEROID["unnamed",6378169,298.2572221]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-137],PARAMETER["satellite_height",35785831],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["Meter",1],EXTENSION["PROJ4","+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-137 +over"]]',
+                      "geos": "+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-137 +over",
+                      # Raster location through geotransform (affine) array [upperleftx, scalex, skewx, upperlefty, skewy, scaley]
+                      # Upperleftx, upperlefty = distance from center (satellite nadir) in meters
+                      # Scale = size of one pixel in units of raster projection in meters
+                      "geotransform": [-5434894.7009821739, 2004.0173154875411, 0.0, 5434894.7009821739, 0.0, -2004.0173154875411],
+                      "interestArea": [-225, 16, -115, 65],
+                      "mercator": "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over",
                       "crop": (2441-2160, 1488-1215, 2441, 1488)}
+
+outputRes = (1920, 1080) # HDTV
 
 # Give credit to the main organizations providing data
 logoheight = 96
@@ -116,7 +133,7 @@ def findgoes(region):
     path = regions[region]["image"]
     d = os.listdir(path)
     image = []
-    pat = re.compile("GOES-17_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png")
+    pat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png" % regions[region]["goes"])
     for date in d:
         datedir = "%s/%s" % (path, date)
         if not os.path.isdir(datedir):
@@ -141,7 +158,7 @@ def prepsfc(fn):
     for p in pix:
         if p[0] == 255 and p[1] == 255 and p[2] == 255:
             sfc2.append((255, 255, 255, 0))
-        elif p[0] == 0 and p[1] <= 30 and p[2] <= 35: # what NOAA uses for black?
+        elif p[0] == 0 and p[1] <= 30 and p[2] <= 35: # In the image black isn't quite black
             sfc2.append((255, 255, 255, 255))
         else:
             sfc2.append(p)
@@ -152,9 +169,66 @@ def prepsfc(fn):
 # cp GOES-17_baseline.png.aux.xml ${GOES}.aux.xml
 # gdalwarp --config CENTER_LONG -180 -t_srs "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over" -te -225 16 -115 65 -te_srs EPSG:4326 -wo SOURCE_EXTRA=1000 ${GOES} -overwrite GOES-17_3395.tif  -ts 2441 1556
 
-proj4merc = "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over"
+def goeswarp(region, fn):
+    reg = regions[region]
+    dwidth = 2441
+    dheight = 1556
+    src = gdal.Open(fn, gdal.GA_ReadOnly)
+    src.SetProjection(reg["WKT"])
+    src.SetGeoTransform(reg["geotransform"])
+
+    warpOptions = gdal.WarpOptions(
+        format="MEM",
+        width=dwidth, height=dheight,
+        outputBounds= reg["interestArea"],
+        outputBoundsSRS="EPSG:4326", # Allows use of lat/lon outputBounds
+        #warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE", "GDAL_PAM_ENABLED=NO"],
+        warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=NO"],
+        dstSRS = reg["mercator"],
+        multithread = True,
+        )
+        
+    logging.debug("Warping %s" % (fn))
+    dst = gdal.Warp('', src, options=warpOptions)
+    sidecar = "%s.aux.xml" % (fn)
+    if os.path.isfile(sidecar): # Would be neat to figure out how to supress this
+        os.unlink(sidecar)
+
+    dsta = dst.ReadAsArray() # Array shape is [band, row, col]
+    arr = dsta.transpose(1, 2, 0) # Virtually change the shape to [row, col, band]
+    img = Image.fromarray(arr, 'RGBA') # fromarray() now reads in correct RGBA order
+
+    if False:
+        # A very slow way to convert the dataset to an RGBA raster
+        logging.debug("Slowly convert warped image to RGBA (%d,%d)" % (dwidth, dheight))
+        dsta = dst.ReadAsArray()
+        img = Image.new('RGBA', (dsta.shape[2], dsta.shape[1]), (255,255,255,0))
+        for j in range(dsta.shape[1]):
+            for i in range(dsta.shape[2]):
+                pixel = (dsta[0, j, i], dsta[1, j, i], dsta[2, j, i], dsta[3, j, i])
+                img.putpixel((i, j), pixel)
+
+    if False:
+        #logging.debug("Copying %d pixels to array" % (dwidth * dheight))
+        dsta = dst.ReadAsArray()
+        arr = np.empty((dsta.shape[1], dsta.shape[2], dsta.shape[0]), np.uint8)
+        for b in range(dsta.shape[0]): # Copy in band order to be cache friendly
+            for r in range(dsta.shape[1]):
+                for c in range(dsta.shape[2]):
+                    pixel = dsta[b, r, c]
+                    arr[r, c, b] = pixel
+        #logging.debug("Creating image from array")
+        img = Image.fromarray(a, 'RGBA')
+
+    src = None
+    dst = None
+    dsta = None
+    arr = None
+    return(img)
+
 tmpfn = "tmp.tif"
-def goeswarp(fn):
+def ogoeswarp(fn):
+    logging.debug("Starting warp of %s" % (fn))
     cmd = "cp GOES-17_baseline.png.aux.xml %s.aux.xml" % (fn)
     subprocess.call(cmd)
     cmd = 'gdalwarp --config CENTER_LONG -180 -t_srs "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over" -te -225 16 -115 65 -te_srs EPSG:4326 -wo SOURCE_EXTRA=1000 -wo NUM_THREADS=4 %s -ts 2441 1556 -overwrite %s' % (fn, tmpfn)
@@ -162,6 +236,7 @@ def goeswarp(fn):
     cmd = "rm %s.aux.xml" % (fn)
     subprocess.call(cmd)
     warp = Image.open(tmpfn)
+    logging.debug("Warp complete")
     return warp
 
 def decorate(img, region, goestime, sfctime):
@@ -264,8 +339,8 @@ def overlay(region):
     sfc = -1
 
     for image in range(len(images)):
-        logging.debug("Image #%d" % image)
         goesfn = images[image]
+        logging.debug("Image #%d: %s" % (image, goesfn))
         m = goespat.match(goesfn)
         goesdate = m.group(1) + m.group(2)
         st = time.strptime(goesdate[0:14],"%Y%m%d%H%M%S")
@@ -294,47 +369,30 @@ def overlay(region):
                 else:
                     nextsfcts = -1
             sfcmap =  prepsfc("%s/%s" % (regions[region]["sfc"], sfcfn))
+            sfcnp = np.array(sfcmap)
+            sfcnp[:,:,3] /= 255 # Scale alpha channel from[0..255] to [0..1]
 
         path = regions[region]["image"]
-        goes = goeswarp("%s/%s/%s" % (path, goesdate[0:8], goesfn))
+        goes = goeswarp(region, "%s/%s/%s" % (path, goesdate[0:8], goesfn))
 
         time2valid = abs(sfcts - goests)
         fadetime = 3 * 60 * 60 # three hours - half of 6 hours between updates
-        fademin = 64 # about 25% opaque at minimum
-        if time2valid < fadetime: # fade in / out over fade time
-            # Make a mask based on how long to valid time
-            opacity = int(((fadetime - time2valid) * (255-fademin)) / fadetime) + fademin
+        fademax = 255 # 100% opaque
+        fademin = 64 # ~25% opaque at minimum
+        if time2valid <= fadetime: # fade in / out over fade time
+            # Fade the map alpha channel based on how long to valid time
+            opacity = int(round(((fadetime - time2valid) * (fademax-fademin)) / fadetime)) + fademin
             logging.debug("Fade %s %d%% (%d)" % (goesfn, (opacity*100/255), opacity))
-            # mask = Image.new("RGBA", (sfcmap.width, sfcmap.height), (0,0,0,opacity))
 
-            if True:
-                # This might be the slowest possible way to make the opacity alpha mask
-                mask = sfcmap.copy()
-                for y in range(mask.height):
-                    for x in range(mask.width):
-                        p = mask.getpixel((x, y))
-                        if (p[3] == 255):
-                            mask.putpixel((x, y), (p[0], p[1], p[2], opacity))
-                goes.paste(mask, None, mask)
-
-            if False:
-                d = np.array(sfcmap)
-                red, green, blue, alpha = d.T
-                print alpha
-                #overlayareas = (alpha == 255)
-                #overlayareas = overlayareas * (opacity / 255)
-                for y in range(alpha.width):
-                    for x in range(alpha.height):
-                        if (alpha[i] != 0):
-                            alpha[i] = opacity
-                            sfcmap.putalpha(alpha)
-                goes.paste(sfcmap, None, sfcmap)
+            d = np.copy(sfcnp) # a copy of the surface analysis
+            d[:,:,3] *= opacity # Scale alpha channel to [0,opacity]
+            overlay = Image.fromarray(d)
+            goes.paste(overlay, None, overlay)
         else:
             logging.debug("No overlay %d (%d): %s %s" % (time2valid, fadetime, sfcfn, goesfn))
 
-        logging.debug("Crop area (%d %d %d %d)" % (regions[region]["crop"][0],regions[region]["crop"][1],regions[region]["crop"][2],regions[region]["crop"][3]))
         crop = goes.crop(regions[region]["crop"])
-        resize = crop.resize((1920, 1080), Image.LANCZOS)
+        resize = crop.resize(outputRes, Image.LANCZOS)
 
         img = decorate(resize, region, goesdate, sfcdate)
 
