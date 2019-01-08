@@ -82,7 +82,7 @@ Program flow:
 # Crop to 16x9 aspect ratio - step is 48x27,(96x54), (192x108), (240x135)
 # Sizes might be 2400x1350, 2640x1485, 2688x1512
 
-# Pacific analysis is 2441 x 1556
+# Cropped Pacific analysis (getting rid of top/bottom margins) is 2441 x 1556
 # Crop to 2160 x 1215 (281, 258, 2441, 1338)
 # Crop to 2080 x 1170 (2441-2080, 1388-1170, 2441, 1388)
 
@@ -101,6 +101,7 @@ regions["pacific"] = {"sfc": "S:/NOAA/OPC/pacific",
                       "geotransform": [-5434894.7009821739, 2004.0173154875411, 0.0, 5434894.7009821739, 0.0, -2004.0173154875411],
                       "interestArea": [-225, 16, -115, 65],
                       "mercator": "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over",
+                      "sfcanalysisArea": (0, 8, 2441, 1564), # Cut off top 8 and bottom 36 pixels
                       "crop": (2441-2160, 1488-1215, 2441, 1488)}
 
 outputRes = (1920, 1080) # HDTV
@@ -148,10 +149,10 @@ def findgoes(region):
     image.sort()
     return(image)
 
-def prepsfc(fn):
+def prepsfc(region, fn):
     # Crop the sfc analysis to the map, make white pixels transparent, turn 'black' pixels white
     img = Image.open(fn).convert('RGBA')
-    crop = img.crop((0, 8, img.width, img.height - 36))
+    crop = img.crop(regions[region]["sfcanalysisArea"])
     pix = crop.getdata()
 
     sfc2 = []
@@ -171,80 +172,42 @@ def prepsfc(fn):
 
 def goeswarp(region, fn):
     reg = regions[region]
-    dwidth = 2441
-    dheight = 1556
     src = gdal.Open(fn, gdal.GA_ReadOnly)
     src.SetProjection(reg["WKT"])
     src.SetGeoTransform(reg["geotransform"])
 
     warpOptions = gdal.WarpOptions(
         format="MEM",
-        width=dwidth, height=dheight,
+        width=reg["sfcanalysisArea"][2] - reg["sfcanalysisArea"][0],
+        height=reg["sfcanalysisArea"][3] - reg["sfcanalysisArea"][1],
         outputBounds= reg["interestArea"],
         outputBoundsSRS="EPSG:4326", # Allows use of lat/lon outputBounds
         #warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE", "GDAL_PAM_ENABLED=NO"],
-        warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=NO"],
+        warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE"],
         dstSRS = reg["mercator"],
         multithread = True,
         )
         
     logging.debug("Warping %s" % (fn))
     dst = gdal.Warp('', src, options=warpOptions)
-    sidecar = "%s.aux.xml" % (fn)
-    if os.path.isfile(sidecar): # Would be neat to figure out how to supress this
-        os.unlink(sidecar)
-
     dsta = dst.ReadAsArray() # Array shape is [band, row, col]
     arr = dsta.transpose(1, 2, 0) # Virtually change the shape to [row, col, band]
-    img = Image.fromarray(arr, 'RGBA') # fromarray() now reads in correct RGBA order
-
-    if False:
-        # A very slow way to convert the dataset to an RGBA raster
-        logging.debug("Slowly convert warped image to RGBA (%d,%d)" % (dwidth, dheight))
-        dsta = dst.ReadAsArray()
-        img = Image.new('RGBA', (dsta.shape[2], dsta.shape[1]), (255,255,255,0))
-        for j in range(dsta.shape[1]):
-            for i in range(dsta.shape[2]):
-                pixel = (dsta[0, j, i], dsta[1, j, i], dsta[2, j, i], dsta[3, j, i])
-                img.putpixel((i, j), pixel)
-
-    if False:
-        #logging.debug("Copying %d pixels to array" % (dwidth * dheight))
-        dsta = dst.ReadAsArray()
-        arr = np.empty((dsta.shape[1], dsta.shape[2], dsta.shape[0]), np.uint8)
-        for b in range(dsta.shape[0]): # Copy in band order to be cache friendly
-            for r in range(dsta.shape[1]):
-                for c in range(dsta.shape[2]):
-                    pixel = dsta[b, r, c]
-                    arr[r, c, b] = pixel
-        #logging.debug("Creating image from array")
-        img = Image.fromarray(a, 'RGBA')
+    img = Image.fromarray(arr, 'RGBA') # fromarray() now reads linearly in RGBA order
 
     src = None
     dst = None
     dsta = None
     arr = None
+
+    # A side effect of setting dst to None is that the sidecar is emmitted when dst is "closed"
+    sidecar = "%s.aux.xml" % (fn)
+    if os.path.isfile(sidecar): # Would be neat to figure out how to supress sidecar emission
+        os.unlink(sidecar)
+
     return(img)
 
-tmpfn = "tmp.tif"
-def ogoeswarp(fn):
-    logging.debug("Starting warp of %s" % (fn))
-    cmd = "cp GOES-17_baseline.png.aux.xml %s.aux.xml" % (fn)
-    subprocess.call(cmd)
-    cmd = 'gdalwarp --config CENTER_LONG -180 -t_srs "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over" -te -225 16 -115 65 -te_srs EPSG:4326 -wo SOURCE_EXTRA=1000 -wo NUM_THREADS=4 %s -ts 2441 1556 -overwrite %s' % (fn, tmpfn)
-    subprocess.call(cmd)
-    cmd = "rm %s.aux.xml" % (fn)
-    subprocess.call(cmd)
-    warp = Image.open(tmpfn)
-    logging.debug("Warp complete")
-    return warp
-
 def decorate(img, region, goestime, sfctime):
-    if region == "atlantic":
-        goes = "16"
-    if region == "pacific":
-        goes = "17"
-
+    goes = regions[region]["goes"]
     year = goestime[0:4]
     month = goestime[4:6]
     day = goestime[6:8]
@@ -328,11 +291,7 @@ def overlay(region):
 
     sfcs = findsfc(region)
     images = findgoes(region)
-
-    if region == "atlantic":
-        goes = "16"
-    if region == "pacific":
-        goes = "17"
+    goes = regions[region]["goes"]
 
     sfcpat = re.compile("(\d\d\d\d\d\d\d\d\d\d\d\d).png")
     goespat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png" % (goes))
@@ -340,7 +299,7 @@ def overlay(region):
 
     for image in range(len(images)):
         goesfn = images[image]
-        logging.debug("Image #%d: %s" % (image, goesfn))
+        logging.info("Image #%d: %s" % (image, goesfn))
         m = goespat.match(goesfn)
         goesdate = m.group(1) + m.group(2)
         st = time.strptime(goesdate[0:14],"%Y%m%d%H%M%S")
@@ -354,7 +313,7 @@ def overlay(region):
         # if the next sfc is closer to the image time, switch to it
         if (sfc == -1) or ((nextsfcts != -1) and (abs(goests - nextsfcts) < abs(goests - sfcts))):
             while (sfc == -1) or ((nextsfcts != -1) and (abs(goests - nextsfcts) < abs(goests - sfcts))):
-                # Advance to next sfc
+                # Advance to next sfc analysis
                 sfc += 1
                 sfcfn = sfcs[sfc]
                 logging.debug("Advance to map #%d: %s" % (sfc, sfcfn))
@@ -368,7 +327,7 @@ def overlay(region):
                     nextsfcts = int(time.mktime(st))
                 else:
                     nextsfcts = -1
-            sfcmap =  prepsfc("%s/%s" % (regions[region]["sfc"], sfcfn))
+            sfcmap =  prepsfc(region, "%s/%s" % (regions[region]["sfc"], sfcfn))
             sfcnp = np.array(sfcmap)
             sfcnp[:,:,3] /= 255 # Scale alpha channel from[0..255] to [0..1]
 
