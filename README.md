@@ -26,7 +26,7 @@ This directory contains helper programs to:
 * **numpy** is the standard Python library for array manipulation
 * **Pillow** is a common Python library for image manipulation
 
-### Development Challenges
+### Manipulating GOES Images w/ GDAL, numpy and Pillow
 It was very hard to find references / examples of using these three libraries together.
 Getting them to work took a while and making them efficient took even longer.
 I'm sure there are more easy optimizations possible.
@@ -70,6 +70,7 @@ We now use numpy's faster code as an intermediate format and processing is down 
 The trick is to use numpy's ability to virtually transpose axes to convert from GDAL's band-oriented [4,x,y]
 orientation to Pillow's [x,y,4] RGBA format.
 
+    dst = gdal.Warp('', src, options=warpOptions)
     dsta = dst.ReadAsArray() # Array shape is [band, row, col]
     arr = dsta.transpose(1, 2, 0) # Virtually change the shape to [row, col, band]
     if jpg:

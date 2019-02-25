@@ -306,7 +306,10 @@ def decorate(img, region, goestime, sfctime):
     draw.text((x, y+ypad), tsstring, fill=(0xff, 0xff, 0xff, 0xff), font=ttfont)
     # print ("x%d y%d w%d h%d ypad%d ttheight%d" % (x, y, w, h, ypad, ttheight))
 
-    if goes == "17" and (int(year) < 2019) or (int(month) < 2) or (int(day) < 12) or (int(hour) < 6):
+    if (goes == "17") and ((int(year) < 2019) or
+                           ((int(year) == 2019) and ((int(month) < 2) or
+                                                     ((int(month) == 2) and ((int(day) < 12) or
+                                                                             ((int(day) == 12) and (int(hour) < 6))))))):
         # GOES-17 was declared operational on the 12th, but NASA didn't say exactly when. 6GMT is about midnight Eastern
         wstring = " GOES-17 Preliminary, Non-Operational Data "
         w, h = ttfont.getsize(wstring)
