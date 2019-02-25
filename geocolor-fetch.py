@@ -1,7 +1,5 @@
 #!/usr/bin/python
 
-# Grab GOES-16 and GOES-17 Geocolored tiles from RAMMB/CIRA
-
 from __future__ import print_function
 import os
 import os.path
@@ -98,7 +96,7 @@ def fetchts(ts, destdir):
 
 def makecomposite(ts, destdir):
     date = ts[:8]
-    time = ts[8:14]
+    time = ts[8:12]
 
     # Put the tiles into a canvas, overlay the map, filet to HD size, then adorn w/ timestamp & logos
     compositedir = "%s/%s/%s" % (rootdir, "composite", date)

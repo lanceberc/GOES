@@ -3,7 +3,8 @@ import os
 import sys
 import re
 import time
-import subprocess
+import argparse
+#import subprocess
 import logging
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -29,13 +30,16 @@ the sidecar is:
   <GeoTransform> -5434894.7009821739, 2004.0173154875411, 0.0, 5434894.7009821739, 0.0, -2004.0173154875411</GeoTransform>
 </PAMDataset>
 
+From https://github.com/pytroll/satpy/blob/master/satpy/readers/geocat.py - not quite the same as NASA:
++proj=geos +lon_0=-75 +h=35786023.0 +a=6378137.0 +b=6356752.31414 +sweep=x +units=m +no_defs
+
 The Proj4 and GeoTransform numbers come from NASA's GOES Product User Guide Volume 3 (Level1b user
 guide), pages 11-20.
 https://www.goes-r.gov/users/docs/PUG-L1b-vol3.pdf
 
 The geos projection specifies a Geostationary Satellite with a specific ellipsoid. AFAIK NASA/NOAA
- renormalize L1b data centering it over 137 degrees west even though GOES-17 is currently at 137.2W.
-This allows warping to be pixel-perfect.
+renormalize L1b data centering it over 137 degrees west even though GOES-17 is currently at 137.2W
+which allows warping to be pixel-perfect.
 
 The GeoTransform parameters specify the dimenstions of the full-disk image in meters and the width
 and height of the image pixel at nadir (directly underneath the satellite) in meters, in this case
@@ -48,8 +52,8 @@ WGS84 =  EPSG:4326
 Mercator =  EPSG:3395
 Web Mercator =  EPSG:3857
 
-The OPC chart is a Mercator projection. The GOES image warped from geos (Geosynchronos)
- projection to Mercator (instead of both warped to some other projection) to keep the text and
+The OPC charts are Mercator projections. The GOES image warped from geos (Geosynchronos)
+projection to Mercator (instead of both warped to some other projection) to keep the text and
 annotations readable. Besides, many are familiar with Mercator maps of the North Atlantic and Pacific.
 
 The EPSG definition of Mercator (EPSG:3395) doesn't work with GDAL when crossing the anti-meridian.
@@ -99,10 +103,28 @@ regions["pacific"] = {"sfc": "S:/NOAA/OPC/pacific",
                       # Upperleftx, upperlefty = distance from center (satellite nadir) in meters
                       # Scale = size of one pixel in units of raster projection in meters
                       "geotransform": [-5434894.7009821739, 2004.0173154875411, 0.0, 5434894.7009821739, 0.0, -2004.0173154875411],
-                      "interestArea": [-225, 16, -115, 65],
+                      "interestArea": [-225, 16, -115, 65], # lat/long of ur, ll corner of Surface Analysis
                       "mercator": "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over",
                       "sfcanalysisArea": (0, 8, 2441, 1564), # Cut off top 8 and bottom 36 pixels
                       "crop": (2441-2160, 1488-1215, 2441, 1488)}
+
+regions["atlantic"] = {"sfc": "S:/NOAA/OPC/atlantic",
+                       "image": "S:/NASA/GOES-16_03_geocolor/composite",
+                       "dest": "S:/NASA/GOES-16_03_geocolor/overlay",
+                       "starttime": "201901110000",
+                       "goes": "16",
+                       "WKT": 'PROJCS["unnamed",GEOGCS["unnamed ellipse",DATUM["unknown",SPHEROID["unnamed",6378169,298.2572221]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-75],PARAMETER["satellite_height",35785831],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["Meter",1],EXTENSION["PROJ4","+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-75 +over"]]',
+                      "geos": "+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-75 +over",
+                       # Raster location through geotransform (affine) array [upperleftx, scalex, skewx, upperlefty, skewy, scaley]
+                       # Upperleftx, upperlefty = distance from center (satellite nadir) in meters
+                       # Scale = size of one pixel in units of raster projection in meters
+                       "geotransform": [-5434894.7009821739, 2004.0173154875411, 0.0, 5434894.7009821739, 0.0, -2004.0173154875411],
+                       "mercator": "+proj=merc +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over",
+                       "interestArea": [-100, 16, 10, 65], # lat/long of lr, ul corner of Surface Analysis
+                       "sfcanalysisArea": (0, 8, 2441, 1564), # Cut off top 8 and bottom 36 pixels
+                       #"crop": (2441-2160, 1488-1215, 2441, 1488)
+                       "crop": (0, 135, 2441-240, 1556) # source is 2441x1556
+}
 
 outputRes = (1920, 1080) # HDTV
 
@@ -131,23 +153,53 @@ def findsfc(region):
     return(maps)
 
 def findgoes(region):
+    """ Find the CIRA png and NESDIS jpg images in the region. Return a list with CIRA images first since as PNGs
+    they're better quality """
     path = regions[region]["image"]
     d = os.listdir(path)
-    image = []
-    pat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png" % regions[region]["goes"])
+    cirapat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png$" % regions[region]["goes"])
+    nesdispat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d).jpg$" % regions[region]["goes"])
+    cira = []
+    nesdis = []
     for date in d:
         datedir = "%s/%s" % (path, date)
         if not os.path.isdir(datedir):
             continue
         l = os.listdir(datedir)
         for e in l:
-            m =  pat.match(e)
+            m =  cirapat.match(e)
             if m:
+                logging.debug("CIRA image %s" % (m.group(1)))
                 f = m.group(1)
                 if (regions[region]["starttime"] <= f):
-                    image.append(e)
-    image.sort()
-    return(image)
+                    cira.append(e)
+            m =  nesdispat.match(e)
+            if m:
+                logging.debug("NESDIS image %s" % (m.group(1)))
+                f = m.group(1)
+                if (regions[region]["starttime"] <= f):
+                    nesdis.append(e)
+
+    # Mergesort with CIRA first if two images have same timestamp
+    cira.sort()
+    nesdis.sort()
+    l = []
+    c = 0
+    n = 0
+    while (c < len(cira)) or (n < len(nesdis)):
+        if c == len(cira):
+            l.append(nesdis[n])
+            n += 1
+        elif n == len(nesdis):
+            l.append(cira[c])
+            c += 1
+        elif cira[c][:-6] <= nesdis[n][:-4]:
+            l.append(cira[c])
+            c += 1
+        else:
+            l.append(nesdis[n])
+            n += 1
+    return(l)
 
 def prepsfc(region, fn):
     # Crop the sfc analysis to the map, make white pixels transparent, turn 'black' pixels white
@@ -171,6 +223,8 @@ def prepsfc(region, fn):
 # gdalwarp --config CENTER_LONG -180 -t_srs "+proj=merc +lon_0=-180 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +over" -te -225 16 -115 65 -te_srs EPSG:4326 -wo SOURCE_EXTRA=1000 ${GOES} -overwrite GOES-17_3395.tif  -ts 2441 1556
 
 def goeswarp(region, fn):
+    jpg = (fn[-4:] == ".jpg")
+
     reg = regions[region]
     src = gdal.Open(fn, gdal.GA_ReadOnly)
     src.SetProjection(reg["WKT"])
@@ -182,17 +236,39 @@ def goeswarp(region, fn):
         height=reg["sfcanalysisArea"][3] - reg["sfcanalysisArea"][1],
         outputBounds= reg["interestArea"],
         outputBoundsSRS="EPSG:4326", # Allows use of lat/lon outputBounds
-        #warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE", "GDAL_PAM_ENABLED=NO"],
-        warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE"],
+        # Setting GDAL_PAM_ENABLED should suppress sidecar emission, but it doesn't
+        # warpOptions=["SOURCE_EXTRA=1000", "GDAL_PAM_ENABLED=FALSE", "GDAL_PAM_ENABLED=NO"],
+        warpOptions=["SOURCE_EXTRA=500"],
         dstSRS = reg["mercator"],
         multithread = True,
         )
+
+    if False:
+        logging.debug("Driver: {}/{}".format(src.GetDriver().ShortName,
+                                             src.GetDriver().LongName))
+        logging.debug("Size is {} x {} x {}".format(src.RasterXSize,
+                                                    src.RasterYSize,
+                                                    src.RasterCount))
+        logging.debug("Projection is {}".format(src.GetProjection()))
+
+        geotransform = src.GetGeoTransform()
+        if geotransform:
+            logging.debug("Origin = ({}, {})".format(geotransform[0], geotransform[3]))
+            logging.debug("Pixel Size = ({}, {})".format(geotransform[1], geotransform[5]))
         
     logging.debug("Warping %s" % (fn))
     dst = gdal.Warp('', src, options=warpOptions)
-    dsta = dst.ReadAsArray() # Array shape is [band, row, col]
-    arr = dsta.transpose(1, 2, 0) # Virtually change the shape to [row, col, band]
-    img = Image.fromarray(arr, 'RGBA') # fromarray() now reads linearly in RGBA order
+    if not dst:
+        logging.info("Warp failed %s" % (fn))
+        img = None
+    else:
+        dsta = dst.ReadAsArray() # Array shape is [band, row, col]
+        arr = dsta.transpose(1, 2, 0) # Virtually change the shape to [row, col, band]
+        if jpg:
+            rgb = Image.fromarray(arr, 'RGB')
+            img = rgb.convert("RGBA")
+        else:
+            img = Image.fromarray(arr, 'RGBA') # fromarray() now reads linearly in RGBA order
 
     src = None
     dst = None
@@ -206,6 +282,10 @@ def goeswarp(region, fn):
 
     return(img)
 
+ttfont = ImageFont.truetype("lucon.ttf", 24) # lucida console - cour.ttf is ugly
+# getsize() returns for actual string, so figure out the greatest possible font height
+ttwidth, ttheight = ttfont.getsize("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[{]}\|;:',<.>/?")
+
 def decorate(img, region, goestime, sfctime):
     goes = regions[region]["goes"]
     year = goestime[0:4]
@@ -214,27 +294,26 @@ def decorate(img, region, goestime, sfctime):
     hour = goestime[8:10]
     minute = goestime[10:12]
 
-    cfont = ImageFont.truetype("lucon.ttf", 24) # lucida console - cour.ttf is ugly
-    # getsize() returns for actual string, so figure out the greatest possible font height
-    x, fheight = cfont.getsize("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[{]}\|;:',<.>/?")
+    canvas = Image.new('RGBA', img.size, (255,255,255,0))
+    draw = ImageDraw.Draw(canvas)
+
     tsstring = " GOES-%s %s-%s-%s %s:%sZ " % (goes, year, month, day, hour, minute)
     x = 4
     y = 8
     ypad = 2
-    w, h = cfont.getsize(tsstring)
-    canvas = Image.new('RGBA', img.size, (255,255,255,0))
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle((x, y, x+w, y+fheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
-    draw.text((x, y+ypad), tsstring, fill=(0xff, 0xff, 0xff, 0xff), font=cfont)
-    # print ("x%d y%d w%d h%d ypad%d fheight%d" % (x, y, w, h, ypad, fheight))
+    w, h = ttfont.getsize(tsstring)
+    draw.rectangle((x, y, x+w, y+ttheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
+    draw.text((x, y+ypad), tsstring, fill=(0xff, 0xff, 0xff, 0xff), font=ttfont)
+    # print ("x%d y%d w%d h%d ypad%d ttheight%d" % (x, y, w, h, ypad, ttheight))
 
-    if goes == "17":
+    if goes == "17" and (int(year) < 2019) or (int(month) < 2) or (int(day) < 12) or (int(hour) < 6):
+        # GOES-17 was declared operational on the 12th, but NASA didn't say exactly when. 6GMT is about midnight Eastern
         wstring = " GOES-17 Preliminary, Non-Operational Data "
-        w, h = cfont.getsize(wstring)
+        w, h = ttfont.getsize(wstring)
         x = img.width - (w + x)
-        draw.rectangle((x, y, x+w, y+fheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
-        draw.text((x, y+ypad), wstring, fill=(0xff, 0xff, 0xff, 0xff), font=cfont)
-        # print ("x%d y%d w%d h%d ypad%d fheight%d" % (x, y, w, h, ypad, fheight))
+        draw.rectangle((x, y, x+w, y+ttheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
+        draw.text((x, y+ypad), wstring, fill=(0xff, 0xff, 0xff, 0xff), font=ttfont)
+        # print ("x%d y%d w%d h%d ypad%d ttheight%d" % (x, y, w, h, ypad, ttheight))
 
     year = sfctime[0:4]
     month = sfctime[4:6]
@@ -243,15 +322,15 @@ def decorate(img, region, goestime, sfctime):
     minute = sfctime[10:12]
 
     x = 4
-    y = y+fheight+ypad+ypad
+    y = y+ttheight+ypad+ypad
     tsstring = " NOAA OPC Sfc Analysis %s-%s-%s %s:%sZ " % (year, month, day, hour, minute)
-    w, h = cfont.getsize(tsstring)
-    draw.rectangle((x, y, x+w, y+fheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
-    draw.text((x, y+ypad), tsstring, fill=(0xff, 0xff, 0xff, 0xff), font=cfont)
+    w, h = ttfont.getsize(tsstring)
+    draw.rectangle((x, y, x+w, y+ttheight+ypad+ypad), fill=(0,0,0,0x80)) # Add some Y padding - X is padded w/ spaces
+    draw.text((x, y+ypad), tsstring, fill=(0xff, 0xff, 0xff, 0xff), font=ttfont)
 
     logospacing = 4
     logomargin = 8
-    logoleft = True
+    logoleft = (goes == "17")
     if logoleft:
         x = logomargin
         y = img.height - (logoheight + logomargin)
@@ -269,7 +348,7 @@ def decorate(img, region, goestime, sfctime):
         
     # afont = ImageFont.truetype("times.ttf", 24)
     text = " Image Credits "
-    w, h = cfont.getsize(text)
+    w, h = ttfont.getsize(text)
     y = img.height - (logoheight + h + logomargin + logospacing + ypad + ypad)
     if logoleft:
         x = logomargin
@@ -278,7 +357,7 @@ def decorate(img, region, goestime, sfctime):
         
     # print("image credit %dx%d @ %d, %d" % (w, h, x, y))
     draw.rectangle((x, y, x+w, y+h), fill=(0,0,0,0x80))
-    draw.text((x,y+ypad), text, fill=(255,255,255,255), font=cfont)
+    draw.text((x,y+ypad), text, fill=(255,255,255,255), font=ttfont)
     img = Image.alpha_composite(img, canvas)
     del draw
     return img
@@ -294,20 +373,24 @@ def overlay(region):
     goes = regions[region]["goes"]
 
     sfcpat = re.compile("(\d\d\d\d\d\d\d\d\d\d\d\d).png")
-    goespat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png" % (goes))
+    cirapat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d)(\d\d).png" % (goes))
+    nesdispat = re.compile("GOES-%s_03_full_(\d\d\d\d\d\d\d\d\d\d\d\d).jpg" % (goes))
     sfc = -1
 
     for image in range(len(images)):
         goesfn = images[image]
         logging.info("Image #%d: %s" % (image, goesfn))
-        m = goespat.match(goesfn)
-        goesdate = m.group(1) + m.group(2)
-        st = time.strptime(goesdate[0:14],"%Y%m%d%H%M%S")
+        m = cirapat.match(goesfn)
+        if not m:
+            m = nesdispat.match(goesfn)
+        goesdate = m.group(1) # Don't include seconds, just hours and minutes
+        st = time.strptime(goesdate[0:12],"%Y%m%d%H%M")
+        
         goests = int(time.mktime(st))
 
         destfn = "%s/%s.png" % (ddir,goesdate)
         if os.path.isfile(destfn):
-            logging.info("Exists: %s" % (destfn))
+            logging.debug("Exists: %s" % (destfn))
             continue
 
         # if the next sfc is closer to the image time, switch to it
@@ -316,7 +399,6 @@ def overlay(region):
                 # Advance to next sfc analysis
                 sfc += 1
                 sfcfn = sfcs[sfc]
-                logging.debug("Advance to map #%d: %s" % (sfc, sfcfn))
                 m = sfcpat.match(sfcfn)
                 sfcdate = m.group(1) + "00"
                 st = time.strptime(sfcdate,"%Y%m%d%H%M%S")
@@ -327,12 +409,16 @@ def overlay(region):
                     nextsfcts = int(time.mktime(st))
                 else:
                     nextsfcts = -1
+            logging.info("Advance to map #%03d: %s" % (sfc, sfcfn))
             sfcmap =  prepsfc(region, "%s/%s" % (regions[region]["sfc"], sfcfn))
             sfcnp = np.array(sfcmap)
             sfcnp[:,:,3] /= 255 # Scale alpha channel from[0..255] to [0..1]
 
         path = regions[region]["image"]
         goes = goeswarp(region, "%s/%s/%s" % (path, goesdate[0:8], goesfn))
+        if not goes:
+            logging.info("Warp failed %s" % (goesfn))
+            continue
 
         time2valid = abs(sfcts - goests)
         fadetime = 3 * 60 * 60 # three hours - half of 6 hours between updates
@@ -348,8 +434,9 @@ def overlay(region):
             overlay = Image.fromarray(d)
             goes.paste(overlay, None, overlay)
         else:
-            logging.debug("No overlay %d (%d): %s %s" % (time2valid, fadetime, sfcfn, goesfn))
+            logging.info("No overlay %d (%d): %s %s" % (time2valid, fadetime, sfcfn, goesfn))
 
+        #goes.save("tst.png", "PNG")
         crop = goes.crop(regions[region]["crop"])
         resize = crop.resize(outputRes, Image.LANCZOS)
 
@@ -357,9 +444,32 @@ def overlay(region):
 
         logging.info("Save %s" % (destfn))
         img.save(destfn, "PNG")
+        #sys.exit(0)
 
 if __name__ == '__main__':
+    #os.environ['GDAL_PAM_ENABLED'] = 'NO' # Should be settable in warpOptions - this breaks warping
+    #os.environ['CPL_DEBUG'] = 'ON' # GDAL option to turn on debuging info
     loglevel = logging.DEBUG
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-atlantic", default=False, action='store_true', help="GOES-16 North Atlantic")
+    parser.add_argument("-pacific", default=False, action='store_true', help="GOES-17 North Pacific")
+    parser.add_argument("-log", choices=["debug", "info", "warning", "error", "critical"], default="info", help="Log level")
+    args = parser.parse_args()
+
+    if args.log == "debug":
+        loglevel = logging.DEBUG
+    if args.log == "info":
+        loglevel = logging.INFO
+    if args.log == "warning":
+        loglevel = logging.WARNING
+    if args.log == "error":
+        loglevel = logging.ERROR
+    if args.log == "critical":
+        loglevel = logging.CRITICAL
+
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S', level=loglevel)
-    
-    overlay("pacific")
+
+    if args.atlantic:
+        overlay("atlantic")
+    if args.pacific:
+        overlay("pacific")

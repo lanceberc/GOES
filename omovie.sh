@@ -2,7 +2,7 @@
 
 export CYGWIN="winsymlinks:nativestrict"
 
-for GOES in 17 ;
+for GOES in 17 16;
 	    do
 		date
 		echo "Link GOES-${GOES} source images"
