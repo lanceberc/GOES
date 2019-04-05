@@ -92,9 +92,9 @@ Program flow:
 
 # The first sfc is 2018-12-24_0600, so start 3 hours earlier for the first image
 regions = {}
-regions["pacific"] = {"sfc": "S:/NOAA/OPC/pacific",
-                      "image": "S:/NASA/GOES-17_03_geocolor/composite",
-                      "dest": "S:/NASA/GOES-17_03_geocolor/overlay",
+regions["pacific"] = {"sfc": "M:/NOAA/OPC/pacific",
+                      "image": "M:/NASA/GOES-17_03_geocolor/composite",
+                      "dest": "M:/NASA/GOES-17_03_geocolor/overlay",
                       "starttime": "201812240300",
                       "goes": "17",
                       "WKT": 'PROJCS["unnamed",GEOGCS["unnamed ellipse",DATUM["unknown",SPHEROID["unnamed",6378169,298.2572221]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-137],PARAMETER["satellite_height",35785831],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["Meter",1],EXTENSION["PROJ4","+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-137 +over"]]',
@@ -108,9 +108,9 @@ regions["pacific"] = {"sfc": "S:/NOAA/OPC/pacific",
                       "sfcanalysisArea": (0, 8, 2441, 1564), # Cut off top 8 and bottom 36 pixels
                       "crop": (2441-2160, 1488-1215, 2441, 1488)}
 
-regions["atlantic"] = {"sfc": "S:/NOAA/OPC/atlantic",
-                       "image": "S:/NASA/GOES-16_03_geocolor/composite",
-                       "dest": "S:/NASA/GOES-16_03_geocolor/overlay",
+regions["atlantic"] = {"sfc": "M:/NOAA/OPC/atlantic",
+                       "image": "M:/NASA/GOES-16_03_geocolor/composite",
+                       "dest": "M:/NASA/GOES-16_03_geocolor/overlay",
                        "starttime": "201901110000",
                        "goes": "16",
                        "WKT": 'PROJCS["unnamed",GEOGCS["unnamed ellipse",DATUM["unknown",SPHEROID["unnamed",6378169,298.2572221]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-75],PARAMETER["satellite_height",35785831],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["Meter",1],EXTENSION["PROJ4","+proj=geos +h=35785831 +a=6378169 +b=6356583.8 +f=.00335281068119356027 +units=m +no_defs -ellps=GRS80 +sweep=x +lon_0=-75 +over"]]',
