@@ -64,7 +64,7 @@ if __name__ == '__main__':
 #    loglevel = logging.DEBUG
     loglevel = logging.INFO
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S', level=loglevel)
-    rootdir = "S:/NOAA/OPC"
+    rootdir = "M:/NOAA/OPC"
     maps["atlantic"] = "https://ocean.weather.gov/A_sfc_full_ocean_color.png"
     maps["pacific"] = "https://ocean.weather.gov/P_sfc_full_ocean_color.png"
 

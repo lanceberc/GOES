@@ -20,7 +20,7 @@ https://cdn.star.nesdis.noaa.gov/GOES17/ABI/FD/GEOCOLOR/20190242145_GOES17-ABI-F
 
 urlbase = "https://cdn.star.nesdis.noaa.gov/GOES%s/ABI/FD/GEOCOLOR/"
 urlfn = "%s_GOES%s-ABI-FD-GEOCOLOR-5424x5424.jpg"
-destbase = "S:/NASA/GOES-%s_03_geocolor/composite/%s%s%s"
+destbase = "M:/NASA/GOES-%s_03_geocolor/composite/%s%s%s"
 destfn = "GOES-%s_03_full_%s%s%s%s%s.jpg"
 
 urllib2knownerrors = {
