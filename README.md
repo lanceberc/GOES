@@ -11,12 +11,18 @@ This directory contains helper programs to:
 * Process the images by reprojecting them and overlaying the surface analysis charts
 * Process the overlays by creating a MP4 movie
 
+### Examples
+There are two examples for using GDAL and Cartopy for geolocating and warping GOES images. The principles work for other geosynchronous satellites.
+
+* [GOES_GDAL.ipynb](GOES_GDAL.ipynb) uses GDAL and is pretty efficient.
+* [GOES_Cartopy.ipynb](GOES_Cartopy.ipynb) uses Cartopy and Matplotlib and is less efficient.
+
 ### Workflow
 
 * Create a repository of GOES images and OPC charts with `fetch.sh`
 * `fetch.sh` uses `geocolor-fetch.py`, `nesdis-fetch.py` and `sfcanalysis.py` to retrieve from remote repositories
 * `overlay.py` is the crux of the biscuit - it warps the GOES images and does the Surface Analysis overlay
-* `omovie.py` creates MPEG movies of the results
+* `cmovie.py` creates MPEG movies of the results
 
 ### Overlay Workflow
 
